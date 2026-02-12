@@ -1,0 +1,24 @@
+[package]
+name = "faker-dxgi-rs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "dxgi"
+crate-type = ["cdylib"]
+
+[dependencies]
+windows = { version = "0.56", features = [
+  "Win32_Foundation",
+  "Win32_System_LibraryLoader",
+  "Win32_Graphics_Dxgi",
+  "Win32_System_SystemServices",
+] }
+
+retour = "0.3"
+tracing = { version = "0.1", optional = true }
+tracing-appender = { version = "0.2", optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
+
+[features]
+debug-log = ["tracing", "tracing-appender", "tracing-subscriber"]
