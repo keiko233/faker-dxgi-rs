@@ -1,0 +1,36 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - name: release
+            flags: ""
+          - name: release-debug-log
+            flags: "--features debug-log"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (${{ matrix.name }})
+        run: cargo build --release ${{ matrix.flags }}
+
+      - name: Upload artifact (${{ matrix.name }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: dxgi-${{ matrix.name }}
+          path: |
+            target/release/dxgi.dll
+            target/release/dxgi.pdb
