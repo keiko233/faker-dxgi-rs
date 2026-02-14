@@ -12,25 +12,113 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        include:
+        gpu:
+          - name: gtx750ti
+            value: "NVIDIA GeForce GTX 750 Ti"
+          - name: gtx1030
+            value: "NVIDIA GeForce GTX 1030"
+          - name: gtx1050ti
+            value: "NVIDIA GeForce GTX 1050 Ti"
+          - name: rtx4090
+            value: "NVIDIA GeForce RTX 4090"
+          - name: rtx5090
+            value: "NVIDIA GeForce RTX 5090"
+          - name: rx580
+            value: "AMD Radeon RX 580"
+          - name: rx9070xt
+            value: "AMD Radeon RX 9070 XT"
+        features:
           - name: release
             flags: ""
           - name: release-debug-log
             flags: "--features debug-log"
+    env:
+      FAKE_GPU_NAME: ${{ matrix.gpu.value }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.gpu.name }}
 
-      - name: Build (${{ matrix.name }})
-        run: cargo build --release ${{ matrix.flags }}
+      - name: Build (${{ matrix.gpu.name }} / ${{ matrix.features.name }})
+        run: cargo build --release ${{ matrix.features.flags }}
 
-      - name: Upload artifact (${{ matrix.name }})
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dxgi-${{ matrix.name }}
-          path: |
-            target/release/dxgi.dll
-            target/release/dxgi.pdb
+          name: dxgi-${{ matrix.gpu.name }}-${{ matrix.features.name }}
+          path: target/release/dxgi.dll
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get short commit hash
+        id: vars
+        run: echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets and manifest
+        shell: bash
+        run: |
+          mkdir -p release
+          manifest='[]'
+
+          for dir in artifacts/dxgi-*/; do
+            dirname=$(basename "$dir")
+            dll_path="$dir/dxgi.dll"
+
+            if [ ! -f "$dll_path" ]; then
+              continue
+            fi
+
+            # Parse gpu name and features from dirname: dxgi-{GPU}-{features}
+            # dirname format: dxgi-GTX1050Ti-release or dxgi-GTX1050Ti-release-debug-log
+            gpu=$(echo "$dirname" | sed 's/^dxgi-//;s/-release.*$//')
+            features=$(echo "$dirname" | sed 's/^dxgi-[^-]*-//')
+
+            dll_hash=$(sha256sum "$dll_path" | cut -d' ' -f1)
+            dll_size=$(stat -c%s "$dll_path")
+
+            cp "$dll_path" "release/${dirname}.dll"
+
+            entry=$(jq -n \
+              --arg name "$dirname" \
+              --arg gpu "$gpu" \
+              --arg features "$features" \
+              --arg dll_sha256 "$dll_hash" \
+              --argjson dll_size "$dll_size" \
+              '{
+                name: $name,
+                gpu: $gpu,
+                features: $features,
+                dll: { file: ($name + ".dll"), sha256: $dll_sha256, size: $dll_size }
+              }')
+
+            manifest=$(echo "$manifest" | jq --argjson entry "$entry" '. + [$entry]')
+          done
+
+          echo "$manifest" | jq '.' > release/manifest.json
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ steps.vars.outputs.short_sha }}
+          name: Build ${{ steps.vars.outputs.short_sha }}
+          body: |
+            Automated build from commit ${{ github.sha }}
+
+            See `manifest.json` for file details and checksums.
+          files: release/*
