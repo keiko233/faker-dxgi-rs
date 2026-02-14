@@ -26,7 +26,7 @@ macro_rules! log_error {
     ($($arg:tt)*) => {};
 }
 
-const FAKE_GPU_NAME: &str = "NVIDIA GeForce GTX 1050 Ti\0";
+const FAKE_GPU_NAME: &str = concat!(env!("FAKE_GPU_NAME"), "\0");
 
 type GetDescFn = unsafe extern "system" fn(*mut c_void, *mut DXGI_ADAPTER_DESC) -> HRESULT;
 
@@ -51,7 +51,10 @@ unsafe extern "system" fn hooked_getdesc(
         let fake: Vec<u16> = FAKE_GPU_NAME.encode_utf16().collect();
         let desc_arr = &mut (*desc).Description;
         desc_arr[..fake.len()].copy_from_slice(&fake);
-        log_info!(fake_gpu = FAKE_GPU_NAME.trim_end_matches('\0'), "GetDesc faked");
+        log_info!(
+            fake_gpu = FAKE_GPU_NAME.trim_end_matches('\0'),
+            "GetDesc faked"
+        );
     } else {
         log_info!(hr = format_args!("0x{:08X}", hr.0), "GetDesc call failed");
     }
@@ -148,7 +151,10 @@ pub unsafe extern "system" fn CreateDXGIFactory(
         std::mem::transmute(proc);
 
     let hr = func(riid, pp_factory);
-    log_info!(hr = format_args!("0x{:08X}", hr.0), "CreateDXGIFactory called");
+    log_info!(
+        hr = format_args!("0x{:08X}", hr.0),
+        "CreateDXGIFactory called"
+    );
     if hr.is_ok() {
         try_install_hook(pp_factory);
     }
@@ -167,7 +173,10 @@ pub unsafe extern "system" fn CreateDXGIFactory1(
         std::mem::transmute(proc);
 
     let hr = func(riid, pp_factory);
-    log_info!(hr = format_args!("0x{:08X}", hr.0), "CreateDXGIFactory1 called");
+    log_info!(
+        hr = format_args!("0x{:08X}", hr.0),
+        "CreateDXGIFactory1 called"
+    );
     if hr.is_ok() {
         try_install_hook(pp_factory);
     }
@@ -187,7 +196,11 @@ pub unsafe extern "system" fn CreateDXGIFactory2(
         std::mem::transmute(proc);
 
     let hr = func(flags, riid, pp_factory);
-    log_info!(flags, hr = format_args!("0x{:08X}", hr.0), "CreateDXGIFactory2 called");
+    log_info!(
+        flags,
+        hr = format_args!("0x{:08X}", hr.0),
+        "CreateDXGIFactory2 called"
+    );
     if hr.is_ok() {
         try_install_hook(pp_factory);
     }
@@ -196,17 +209,17 @@ pub unsafe extern "system" fn CreateDXGIFactory2(
 
 #[cfg(feature = "debug-log")]
 fn init_tracing() {
-    use tracing_subscriber::fmt;
     use tracing_appender::rolling;
+    use tracing_subscriber::fmt;
 
     let exe_path = std::env::current_exe().unwrap_or_default();
-    let log_dir = exe_path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+    let log_dir = exe_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
     let file_appender = rolling::never(&log_dir, "faker-dxgi.log");
 
-    let _ = fmt()
-        .with_writer(file_appender)
-        .with_ansi(false)
-        .try_init();
+    let _ = fmt().with_writer(file_appender).with_ansi(false).try_init();
 }
 
 #[no_mangle]
