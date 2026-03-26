@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::sync::Once;
 use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::System::LibraryLoader::*;
@@ -23,6 +24,7 @@ macro_rules! log_error {
 }
 
 static mut REAL_D3D11: HMODULE = HMODULE(0);
+static HOOK_INSTALL: Once = Once::new();
 
 fn ensure_real_d3d11() {
     unsafe {
@@ -38,6 +40,10 @@ fn ensure_real_d3d11() {
             }
         }
     }
+}
+
+fn ensure_hook() {
+    HOOK_INSTALL.call_once(|| faker_core::install_hook_via_dxgi());
 }
 
 // D3D11CreateDevice(pAdapter, DriverType, Software, Flags,
@@ -86,6 +92,7 @@ pub unsafe extern "system" fn D3D11CreateDevice(
     pp_immediate_context: *mut *mut c_void,
 ) -> HRESULT {
     ensure_real_d3d11();
+    ensure_hook();
     let proc = GetProcAddress(REAL_D3D11, s!("D3D11CreateDevice"));
     let func: D3D11CreateDeviceFn = std::mem::transmute(proc);
     let hr = func(
@@ -152,7 +159,8 @@ pub extern "system" fn DllMain(_hinst: HINSTANCE, reason: u32, _reserved: *mut c
             tracing::info!("faker-d3d11 loaded (DLL_PROCESS_ATTACH)");
         }
         ensure_real_d3d11();
-        faker_core::install_hook_via_dxgi();
+        // Hook is installed lazily on first D3D11CreateDevice call to avoid
+        // creating COM objects under the loader lock in DllMain.
     }
     TRUE
 }
