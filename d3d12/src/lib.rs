@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::sync::Once;
 use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::System::LibraryLoader::*;
@@ -23,6 +24,7 @@ macro_rules! log_error {
 }
 
 static mut REAL_D3D12: HMODULE = HMODULE(0);
+static HOOK_INSTALL: Once = Once::new();
 
 fn ensure_real_d3d12() {
     unsafe {
@@ -38,6 +40,10 @@ fn ensure_real_d3d12() {
             }
         }
     }
+}
+
+fn ensure_hook() {
+    HOOK_INSTALL.call_once(|| faker_core::install_hook_via_dxgi());
 }
 
 // D3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice)
@@ -91,6 +97,7 @@ pub unsafe extern "system" fn D3D12CreateDevice(
     pp_device: *mut *mut c_void,
 ) -> HRESULT {
     ensure_real_d3d12();
+    ensure_hook();
     let proc = GetProcAddress(REAL_D3D12, s!("D3D12CreateDevice"));
     let func: D3D12CreateDeviceFn = std::mem::transmute(proc);
     let hr = func(p_adapter, minimum_feature_level, riid, pp_device);
@@ -174,7 +181,8 @@ pub extern "system" fn DllMain(_hinst: HINSTANCE, reason: u32, _reserved: *mut c
             tracing::info!("faker-d3d12 loaded (DLL_PROCESS_ATTACH)");
         }
         ensure_real_d3d12();
-        faker_core::install_hook_via_dxgi();
+        // Hook is installed lazily on first D3D12CreateDevice call to avoid
+        // creating COM objects under the loader lock in DllMain.
     }
     TRUE
 }
