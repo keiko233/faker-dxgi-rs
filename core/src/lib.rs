@@ -1,10 +1,8 @@
 use std::ffi::c_void;
 use std::sync::{Once, OnceLock};
 use windows::core::*;
-use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::System::LibraryLoader::*;
-use windows::Win32::System::SystemServices::*;
 
 use retour::GenericDetour;
 
@@ -26,13 +24,14 @@ macro_rules! log_error {
     ($($arg:tt)*) => {};
 }
 
-const FAKE_GPU_NAME: &str = concat!(env!("FAKE_GPU_NAME"), "\0");
+pub const FAKE_GPU_NAME: &str = concat!(env!("FAKE_GPU_NAME"), "\0");
 
-type GetDescFn = unsafe extern "system" fn(*mut c_void, *mut DXGI_ADAPTER_DESC) -> HRESULT;
+pub type GetDescFn = unsafe extern "system" fn(*mut c_void, *mut DXGI_ADAPTER_DESC) -> HRESULT;
 
-static GET_DESC_HOOK: OnceLock<GenericDetour<GetDescFn>> = OnceLock::new();
+pub static GET_DESC_HOOK: OnceLock<GenericDetour<GetDescFn>> = OnceLock::new();
+pub static HOOK_INIT: Once = Once::new();
 
-unsafe extern "system" fn hooked_getdesc(
+pub unsafe extern "system" fn hooked_getdesc(
     this: *mut c_void,
     desc: *mut DXGI_ADAPTER_DESC,
 ) -> HRESULT {
@@ -62,29 +61,9 @@ unsafe extern "system" fn hooked_getdesc(
     hr
 }
 
-static mut REAL_DXGI: HMODULE = HMODULE(0);
-
-fn ensure_real_dxgi() {
-    unsafe {
-        if REAL_DXGI.0 == 0 {
-            match LoadLibraryA(s!("C:\\Windows\\System32\\dxgi.dll")) {
-                Ok(h) => {
-                    REAL_DXGI = h;
-                    log_info!("Loaded real dxgi.dll: {:?}", h);
-                }
-                Err(_e) => {
-                    log_error!("Failed to load real dxgi.dll: {}", _e);
-                }
-            }
-        }
-    }
-}
-
-static HOOK_INIT: Once = Once::new();
-
-/// Install the GetDesc hook via the factory's first adapter.
-/// Uses `Once` so it only runs once regardless of which CreateDXGIFactory* is called.
-unsafe fn try_install_hook(pp_factory: *mut *mut c_void) {
+/// Install the GetDesc hook via an already-created factory pointer.
+/// Uses `Once` so it only runs once per DLL instance regardless of how many times it is called.
+pub unsafe fn try_install_hook(pp_factory: *mut *mut c_void) {
     HOOK_INIT.call_once(|| {
         let factory_ptr = *pp_factory;
         if factory_ptr.is_null() {
@@ -139,76 +118,50 @@ unsafe fn try_install_hook(pp_factory: *mut *mut c_void) {
     });
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn CreateDXGIFactory(
-    riid: *const GUID,
-    pp_factory: *mut *mut c_void,
-) -> HRESULT {
-    ensure_real_dxgi();
+/// Install the GetDesc hook by internally creating a temporary DXGI factory.
+/// Call this from DllMain of non-DXGI proxy DLLs (d3d11, d3d12, dxvk).
+pub fn install_hook_via_dxgi() {
+    unsafe {
+        let dxgi = match LoadLibraryA(s!("C:\\Windows\\System32\\dxgi.dll")) {
+            Ok(h) => h,
+            Err(_e) => {
+                log_error!("install_hook_via_dxgi: failed to load dxgi.dll: {}", _e);
+                return;
+            }
+        };
 
-    let proc = GetProcAddress(REAL_DXGI, s!("CreateDXGIFactory"));
-    let func: extern "system" fn(*const GUID, *mut *mut c_void) -> HRESULT =
-        std::mem::transmute(proc);
+        let proc = GetProcAddress(dxgi, s!("CreateDXGIFactory1"));
+        if proc.is_none() {
+            log_error!("install_hook_via_dxgi: CreateDXGIFactory1 not found");
+            return;
+        }
 
-    let hr = func(riid, pp_factory);
-    log_info!(
-        hr = format_args!("0x{:08X}", hr.0),
-        "CreateDXGIFactory called"
-    );
-    if hr.is_ok() {
-        try_install_hook(pp_factory);
+        type CreateFactory1Fn = unsafe extern "system" fn(*const GUID, *mut *mut c_void) -> HRESULT;
+        let create: CreateFactory1Fn = std::mem::transmute(proc);
+
+        let riid = IDXGIFactory1::IID;
+        let mut factory: *mut c_void = std::ptr::null_mut();
+        let hr = create(&riid, &mut factory);
+        if hr.is_err() || factory.is_null() {
+            log_error!(
+                "install_hook_via_dxgi: CreateDXGIFactory1 failed: 0x{:08X}",
+                hr.0
+            );
+            return;
+        }
+
+        try_install_hook(&mut factory);
+
+        // Release the factory (vtable slot 2 = IUnknown::Release)
+        type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
+        let vtable = *(factory as *const *const usize);
+        let release: ReleaseFn = std::mem::transmute(*vtable.add(2));
+        release(factory);
     }
-    hr
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn CreateDXGIFactory1(
-    riid: *const GUID,
-    pp_factory: *mut *mut c_void,
-) -> HRESULT {
-    ensure_real_dxgi();
-
-    let proc = GetProcAddress(REAL_DXGI, s!("CreateDXGIFactory1"));
-    let func: extern "system" fn(*const GUID, *mut *mut c_void) -> HRESULT =
-        std::mem::transmute(proc);
-
-    let hr = func(riid, pp_factory);
-    log_info!(
-        hr = format_args!("0x{:08X}", hr.0),
-        "CreateDXGIFactory1 called"
-    );
-    if hr.is_ok() {
-        try_install_hook(pp_factory);
-    }
-    hr
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn CreateDXGIFactory2(
-    flags: u32,
-    riid: *const GUID,
-    pp_factory: *mut *mut c_void,
-) -> HRESULT {
-    ensure_real_dxgi();
-
-    let proc = GetProcAddress(REAL_DXGI, s!("CreateDXGIFactory2"));
-    let func: extern "system" fn(u32, *const GUID, *mut *mut c_void) -> HRESULT =
-        std::mem::transmute(proc);
-
-    let hr = func(flags, riid, pp_factory);
-    log_info!(
-        flags,
-        hr = format_args!("0x{:08X}", hr.0),
-        "CreateDXGIFactory2 called"
-    );
-    if hr.is_ok() {
-        try_install_hook(pp_factory);
-    }
-    hr
 }
 
 #[cfg(feature = "debug-log")]
-fn init_tracing() {
+pub fn init_tracing(log_filename: &str) {
     use tracing_appender::rolling;
     use tracing_subscriber::fmt;
 
@@ -217,21 +170,9 @@ fn init_tracing() {
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .to_path_buf();
-    let file_appender = rolling::never(&log_dir, "faker-dxgi.log");
-
+    let file_appender = rolling::never(&log_dir, log_filename);
     let _ = fmt().with_writer(file_appender).with_ansi(false).try_init();
 }
 
-#[no_mangle]
-pub extern "system" fn DllMain(_hinst: HINSTANCE, reason: u32, _reserved: *mut c_void) -> BOOL {
-    if reason == DLL_PROCESS_ATTACH {
-        #[cfg(feature = "debug-log")]
-        {
-            init_tracing();
-            tracing::info!("faker-dxgi loaded (DLL_PROCESS_ATTACH)");
-        }
-        ensure_real_dxgi();
-    }
-
-    TRUE
-}
+#[cfg(not(feature = "debug-log"))]
+pub fn init_tracing(_log_filename: &str) {}

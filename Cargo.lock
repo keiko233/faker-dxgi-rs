@@ -49,13 +49,49 @@ dependencies = [
 ]
 
 [[package]]
-name = "faker-dxgi-rs"
+name = "faker-core"
 version = "0.1.0"
 dependencies = [
  "retour",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "windows",
+]
+
+[[package]]
+name = "faker-d3d11"
+version = "0.1.0"
+dependencies = [
+ "faker-core",
+ "tracing",
+ "windows",
+]
+
+[[package]]
+name = "faker-d3d12"
+version = "0.1.0"
+dependencies = [
+ "faker-core",
+ "tracing",
+ "windows",
+]
+
+[[package]]
+name = "faker-dxgi"
+version = "0.1.0"
+dependencies = [
+ "faker-core",
+ "tracing",
+ "windows",
+]
+
+[[package]]
+name = "faker-dxvk"
+version = "0.1.0"
+dependencies = [
+ "faker-core",
+ "tracing",
  "windows",
 ]
 

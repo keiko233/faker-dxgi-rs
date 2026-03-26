@@ -43,14 +43,22 @@ jobs:
         with:
           key: ${{ matrix.gpu.name }}
 
-      - name: Build (${{ matrix.gpu.name }} / ${{ matrix.features.name }})
-        run: cargo build --release ${{ matrix.features.flags }}
+      - name: Build all DLLs (${{ matrix.gpu.name }} / ${{ matrix.features.name }})
+        run: |
+          cargo build --release -p faker-dxgi ${{ matrix.features.flags }}
+          cargo build --release -p faker-d3d11 ${{ matrix.features.flags }}
+          cargo build --release -p faker-d3d12 ${{ matrix.features.flags }}
+          cargo build --release -p faker-dxvk ${{ matrix.features.flags }}
 
-      - name: Upload artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dxgi-${{ matrix.gpu.name }}-${{ matrix.features.name }}
-          path: target/release/dxgi.dll
+          name: dlls-${{ matrix.gpu.name }}-${{ matrix.features.name }}
+          path: |
+            target/release/dxgi.dll
+            target/release/d3d11.dll
+            target/release/d3d12.dll
+            target/release/dxvk.dll
 
   release:
     needs: build
@@ -76,38 +84,44 @@ jobs:
           mkdir -p release
           manifest='[]'
 
-          for dir in artifacts/dxgi-*/; do
+          for dir in artifacts/dlls-*/; do
             dirname=$(basename "$dir")
-            dll_path="$dir/dxgi.dll"
 
-            if [ ! -f "$dll_path" ]; then
-              continue
-            fi
+            # Parse gpu and features from dirname: dlls-{gpu}-{features}
+            gpu=$(echo "$dirname" | sed 's/^dlls-//;s/-release.*$//')
+            features=$(echo "$dirname" | sed 's/^dlls-[^-]*-//')
 
-            # Parse gpu name and features from dirname: dxgi-{GPU}-{features}
-            # dirname format: dxgi-GTX1050Ti-release or dxgi-GTX1050Ti-release-debug-log
-            gpu=$(echo "$dirname" | sed 's/^dxgi-//;s/-release.*$//')
-            features=$(echo "$dirname" | sed 's/^dxgi-[^-]*-//')
+            for dll_name in dxgi d3d11 d3d12 dxvk; do
+              dll_path="$dir/${dll_name}.dll"
+              if [ ! -f "$dll_path" ]; then
+                continue
+              fi
 
-            dll_hash=$(sha256sum "$dll_path" | cut -d' ' -f1)
-            dll_size=$(stat -c%s "$dll_path")
+              dll_hash=$(sha256sum "$dll_path" | cut -d' ' -f1)
+              dll_size=$(stat -c%s "$dll_path")
+              asset_name="${dll_name}-${gpu}-${features}"
 
-            cp "$dll_path" "release/${dirname}.dll"
+              cp "$dll_path" "release/${asset_name}.dll"
 
-            entry=$(jq -n \
-              --arg name "$dirname" \
-              --arg gpu "$gpu" \
-              --arg features "$features" \
-              --arg dll_sha256 "$dll_hash" \
-              --argjson dll_size "$dll_size" \
-              '{
-                name: $name,
-                gpu: $gpu,
-                features: $features,
-                dll: { file: ($name + ".dll"), sha256: $dll_sha256, size: $dll_size }
-              }')
+              entry=$(jq -n \
+                --arg name "$asset_name" \
+                --arg dll "$dll_name" \
+                --arg gpu "$gpu" \
+                --arg features "$features" \
+                --arg sha256 "$dll_hash" \
+                --argjson size "$dll_size" \
+                '{
+                  name: $name,
+                  dll: $dll,
+                  gpu: $gpu,
+                  features: $features,
+                  file: ($name + ".dll"),
+                  sha256: $sha256,
+                  size: $size
+                }')
 
-            manifest=$(echo "$manifest" | jq --argjson entry "$entry" '. + [$entry]')
+              manifest=$(echo "$manifest" | jq --argjson entry "$entry" '. + [$entry]')
+            done
           done
 
           echo "$manifest" | jq '.' > release/manifest.json
